@@ -43,18 +43,18 @@ We bridge the agent's episodic execution logs with a global **Semantic Relation 
 graph TD
     %% Episodic Layer
     subgraph Episodic Trajectory Layer
-        RunA[Run: A] -->|CONTAINS| Event1(Event: 1 - Connect attempts)
-        Event1 -->|NEXT| Event2(Event: 2 - TimeoutError)
-        Event2 -->|NEXT| Event3(Event: 3 - Flush DNS)
-        Event3 -->|NEXT| Event4(Event: 4 - Success)
+        RunA["Run: A"] -->|CONTAINS| Event1("Event: 1 - Connect attempts")
+        Event1 -->|NEXT| Event2("Event: 2 - TimeoutError")
+        Event2 -->|NEXT| Event3("Event: 3 - Flush DNS")
+        Event3 -->|NEXT| Event4("Event: 4 - Success")
         Event2 -->|CAUSED_BY| Event1
         Event4 -->|CAUSED_BY| Event3
     end
 
     %% Semantic Layer
     subgraph Semantic Relation Layer
-        Postgres[Entity: Postgres] -->|CONFIGURED_WITH| Port5432[Entity: Port 5432]
-        Timeout[Entity: TimeoutError]
+        Postgres["Entity: Postgres"] -->|CONFIGURED_WITH| Port5432["Entity: Port 5432"]
+        Timeout["Entity: TimeoutError"]
     end
 
     %% The Bloom Bridge
@@ -78,21 +78,25 @@ graph TD
 
 By mapping both **successful** and **failed** runs, SAG enables **proactive backtracking** during runtime. The agent queries its current trajectory prefix against the global memory graph. If the graph projects a 100% failure rate for that trajectory pattern, the runtime **aborts the branch, forks back to the last stable state, and redirects the agent.**
 
+> [!NOTE]
+> **Origin Story:**  
+> The concept of *Predictive Dead-End Detection & Backtracking* was conceived in a shower-thought moment of inspiration, recognizing that preventing agent failures early saves more time and compute than resolving them post-facto.
+
 ```mermaid
 flowchart TD
     %% Define Nodes
-    A[Agent Execution Start] --> B{Step Executed}
-    B --> C[Extract prefix entities]
-    C --> D[Query Neo4j Memory Graph]
-    D --> E{Historical Failure Rate >= 90%?}
+    A["Agent Execution Start"] --> B{"Step Executed"}
+    B --> C["Extract prefix entities"]
+    C --> D["Query Neo4j Memory Graph"]
+    D --> E{"Historical Failure Rate >= 90%?"}
     
     %% Decision branches
-    E -- No --> F[Proceed to next step]
+    E -- No --> F["Proceed to next step"]
     F --> B
     
-    E -- Yes: Dead End Detected --> G[Halt execution branch]
-    G --> H[Fork run back to last stable state]
-    H --> I[Inject feedback: 'Avoid path [X, Y, Z]']
+    E -- Yes: Dead End Detected --> G["Halt execution branch"]
+    G --> H["Fork run back to last stable state"]
+    H --> I["Inject feedback: 'Avoid path (X, Y, Z)'"]
     I --> B
     
     %% Styles
@@ -126,13 +130,14 @@ The pipeline parses standard SWE-agent `.traj` JSON interaction logs. It transla
 
 ```mermaid
 graph LR
-    Traj[SWE-Agent .traj JSON] -->|Parse Turns| Ingest[parser_swe.py]
-    Ingest -->|Append Logs| SQLite[(SQLite Event Store)]
-    Ingest -->|Extract Files & Errors| Extractor[EntityExtractor]
-    Extractor -->|Project Graph| Neo4j[(Neo4j DB)]
+    Traj["SWE-Agent .traj JSON"] -->|Parse Turns| Ingest["parser_swe.py"]
+    Ingest -->|Append Logs| SQLite[("SQLite Event Store")]
+    Ingest -->|Extract Files & Errors| Extractor["EntityExtractor"]
+    Extractor -->|Project Graph| Neo4j[("Neo4j DB")]
     
     style SQLite fill:#1e272e,stroke:#34e7e4,stroke-width:2px,color:#fff
     style Neo4j fill:#2c3e50,stroke:#0be881,stroke-width:2px,color:#fff
+    classDef default fill:#485460,stroke:#1e272e,color:#fff
 ```
 
 *   **Episodic Mapping:** Turns are mapped as `agent.step` events connected by chronological `[:NEXT]` edges and causal `[:CAUSED_BY]` links.
