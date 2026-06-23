@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "semantic-agent-graph"
+version = "0.1.0"
+description = "Event-Sourced Episodic-Semantic Graphs for Branchable Agent Memory"
+authors = ["Antigravity <gemini@google.com>"]
+readme = "README.md"
+packages = [{include = "semantic_agent_graph"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pydantic = "^2.0"
+neo4j = "^5.0"
+google-genai = "^0.1.0"
+python-dotenv = "^1.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
