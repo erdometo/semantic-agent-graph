@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Poetry](https://img.shields.io/badge/poetry-package-blueviolet.svg)](https://python-poetry.org/)
 
-**Semantic Agent Graph (SAG)** is an advanced event-sourced agent memory framework. It extends the core thesis of event-sourced reactive agents by bridging **Episodic Memory** (the sequential trajectory of agent experiences) with a **Semantic Relation Graph** (real-world canonical concepts, errors, and system schemas). 
+**Semantic Agent Graph (SAG)** is an event-sourced agentic memory framework. It extends the core concept of reactive event-sourced agents by bridging **Episodic Memory** (the chronological trajectory of an agent's run experiences) with a global **Semantic Relation Layer** (reconstructing entities, system schemas, and error relationships). 
 
 Rather than querying unstructured vector databases (RAG), the agent retrieves memory as a **structured sub-graph**, enabling it to recall the **exact chronological sequence of steps** (e.g. resolution pathways) that successfully solved a similar problem in past runs, and **cheaply fork** those pathways to test new hypotheses.
 
@@ -14,13 +14,14 @@ Rather than querying unstructured vector databases (RAG), the agent retrieves me
 
 This project builds directly upon the foundational research of **Yohei Nakajima** (creator of *BabyAGI*):
 
-> ** foundational Paper:**  
+> [!IMPORTANT]
+> **Foundational Paper Reference:**  
 > Yohei Nakajima et al. (May 2026).  
 > *"The Log is the Agent: Event-Sourced Reactive Graphs for Auditable, Forkable Agentic Systems"* (arXiv:2605.21997).  
 > *Foundational Repository:* [yoheinakajima/activegraph](https://github.com/yoheinakajima/activegraph)
 
 ### The ActiveGraph Thesis: "The Log is the Agent"
-Traditional agent loops treat execution logic as the core state, with logging and tracing as secondary layers. Nakajima's **ActiveGraph** inverts this:
+Traditional agent loops treat execution logic as the core state, with logging and tracing as secondary layers. ActiveGraph inverts this design:
 1.  **The Event Log is the Source of Truth:** Every decision, prompt, LLM call, and tool output is saved to an append-only event log.
 2.  **The Graph is a Projection:** The system's state (nodes and relationships) is a deterministic view reconstructed by replaying the event log sequentially.
 3.  **Reactive Behaviors:** Computational units (behaviors) subscribe to specific graph patterns and trigger asynchronously, writing new events back to the log.
@@ -31,7 +32,7 @@ Traditional agent loops treat execution logic as the core state, with logging an
 
 While ActiveGraph isolates individual run trajectories to evaluate structural lineage, **Semantic Agent Graph (SAG)** introduces **Episodic-Semantic Blooming**. 
 
-Most agents fail to generalize past runs because their memory is either a flat list of text vectors (which lacks relational context) or a pure knowledge graph (which lacks chronological context). We bridge these layers by overlaying a global **Semantic Relation Layer** onto the episodic execution logs using cross-graph relations.
+We bridge the agent's episodic execution logs with a global **Semantic Relation Layer** containing normalized entities (such as software files, python classes, third-party libraries, and system error tracebacks).
 
 ### The Unified "Bloomed" Architecture
 *   **Episodic Trajectory Layer:** Captures the unique chronological runs, sequential events, parent forks, and causal lineages.
@@ -69,53 +70,140 @@ graph TD
 
 ---
 
-## How It Works
+## Ingesting SWE-Agent Trajectories
+
+To bridge SAG into production-grade benchmarks, we implemented a specialized **SWE-agent Trajectory Ingestion Pipeline** located in [parser_swe.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/parser_swe.py).
+
+### How Ingestion Works
+The pipeline parses standard SWE-agent `.traj` JSON interaction logs. It translates the raw model turns (thoughts, actions, observations) into episodic events and blooms them with canonical software components.
+
+```mermaid
+graph LR
+    Traj[SWE-Agent .traj JSON] -->|Parse Turns| Ingest[parser_swe.py]
+    Ingest -->|Append Logs| SQLite[(SQLite Event Store)]
+    Ingest -->|Extract Files & Errors| Extractor[EntityExtractor]
+    Extractor -->|Project Graph| Neo4j[(Neo4j DB)]
+```
+
+*   **Episodic Mapping:** Turns are mapped as `agent.step` events connected by chronological `[:NEXT]` edges and causal `[:CAUSED_BY]` links.
+*   **Semantic Mapping:** Files modified (e.g. `query.py`), pytest commands, and runtime exceptions (e.g. `AttributeError`) are automatically extracted and merged into global Neo4j `Entity` nodes, linked to the execution steps.
+
+For testing, running the parser without arguments automatically creates a mock-verified `sample_swe_trajectory.json` representing a real-world Django queryset bug fix.
+
+---
+
+## How It Works (CQRS Pattern)
 
 SAG is implemented using a Command Query Responsibility Segregation (**CQRS**) architecture:
 
-1.  **Command Model (Write-optimized SQLite):** Sequential, append-only logs are committed instantly to an in-memory or file-backed SQLite database. This guarantees high-throughput write performance, transaction isolation, and linear replays.
-2.  **Read Model (Query-optimized Neo4j):** SQLite events are projected in real time into a running **Neo4j** instance. Neo4j acts as the bloomed episodic-semantic graph.
-3.  **Determinism Cache Contract:** Non-deterministic LLM or tool responses are cached as `llm.responded` pairs keyed by the hash of the prompt. During replay or forking, responses are fetched from the log cache, reducing latency to milliseconds and eliminating API costs.
-4.  **Raw Path Graph Memory Tool:** When the agent hits a block (e.g. `TimeoutError`), it queries the memory tool with its current entity signature. The tool queries Neo4j using Cypher and returns a raw path graph (nodes and relationships) of past successful runs, allowing the agent to inspect the connections and steps directly.
-
-### The Memory Retrieval Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Agent as Reactive Agent
-    participant MT as Neo4jMemoryTool
-    participant DB as Neo4j Graph DB
-    participant RT as ReactiveRuntime
-
-    Agent->>Agent: Encounters database error: "TimeoutError" on "Postgres"
-    Agent->>MT: query_past_trajectories(["Postgres", "TimeoutError"])
-    MT->>DB: Run Cypher Traversal
-    Note over DB: Matches past successful runs containing matching entities<br/>and extracts Event-[NEXT]-Event paths
-    DB-->>MT: Return nodes & relationships
-    MT-->>Agent: Return Raw Neo4j Path Graph
-    Agent->>Agent: Inspects graph: Identifies "Flush DNS" resolved the error
-    Agent->>RT: Replicates resolution step: Flush DNS
-```
+1.  **Command Model (Write-optimized SQLite):** Sequential, append-only logs are committed instantly to SQLite. This guarantees high-throughput write performance, transaction isolation, and linear replays.
+2.  **Read Model (Query-optimized Neo4j):** SQLite events are projected in real time into **Neo4j** to form the bloomed graph.
+3.  **Determinism Cache Contract:** Non-deterministic LLM or tool responses are cached as `llm.responded` pairs keyed by prompt hash. During replays, responses are fetched from the log cache.
+4.  **Raw Path Graph Memory Tool:** When the agent encounters a block, it queries the memory tool with its current entity signature. The tool queries Neo4j using Cypher and returns a **Neo4j Path Graph** containing the raw list of nodes and relationships of successful past runs.
 
 ---
 
 ## Project Structure
 
+*   [semantic_agent_graph/](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph): The core source code directory.
+    *   [__init__.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/__init__.py): Exposes models, store, runtime, extraction, memory, and parser APIs.
+    *   [models.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/models.py): Pydantic models mapping `Event`, `Run`, `Entity`, and `Relation`.
+    *   [store.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/store.py): SQLite Event Store handling streams, runs, and local branching.
+    *   [runtime.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/runtime.py): Event loop runtime, behaviors, context vars, and cache contract.
+    *   [projection.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/projection.py): Neo4j Cypher projection engine syncing events to the graph.
+    *   [extraction.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/extraction.py): Hybrid extraction module combining Regex rules and Gemini.
+    *   [memory.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/memory.py): Neo4j query tool extracting sub-graphs of successful histories.
+    *   [parser_swe.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/semantic_agent_graph/parser_swe.py): Trajectory parser matching standard `.traj` schema.
+*   [tests/](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/tests): Fully automated test suite.
+    *   [test_runtime.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/tests/test_runtime.py): Tests store logic, behaviors, loops, and caching.
+    *   [test_extraction.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/tests/test_extraction.py): Tests regex patterns and canonical normalization.
+    *   [test_parser.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/tests/test_parser.py): Ingestion parser test cases.
+*   [demo.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/demo.py): End-to-end integration demo script.
+*   [benchmark.py](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/benchmark.py): Performance evaluation benchmark.
+*   [RESEARCH.md](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/RESEARCH.md): Deep-dive guide for academic researchers and evaluation.
+*   [TESTING.md](file:///c:/Users/ASUS/Desktop/projects/Agent-Log-Graph/TESTING.md): Quickstart instructions on executing unit and integration tests.
+
+---
+
+## Detailed Quickstart & API Reference
+
+### 1. Initializing the Event Store & Neo4j Projection
+
+```python
+from semantic_agent_graph import SQLiteEventStore, Neo4jProjection
+
+# Initialize the write-model event store (SQLite)
+store = SQLiteEventStore("runs.db")
+
+# Initialize the read-model projection engine (Neo4j)
+projection = Neo4jProjection(
+    uri="bolt://localhost:7687",
+    auth=("neo4j", "password")
+)
 ```
-semantic_agent_graph/
-├── __init__.py          # Package exports
-├── models.py            # Pydantic schemas (Event, Run, Entity, Relation)
-├── store.py             # SQLite Event Store (Write Model)
-├── projection.py        # Neo4j Projection sync (Read Model)
-├── runtime.py           # Reactive execution engine & Caching Contract
-├── extraction.py        # Hybrid entity extraction (Regex + Gemini structured fallback)
-└── memory.py            # Neo4j Cypher memory query tool
-tests/
-├── test_runtime.py      # SQLite store, caching, and runtime loop tests
-└── test_extraction.py   # Regex parsing and canonical normalization tests
-demo.py                  # End-to-end integration demo script
-benchmark.py             # Performance benchmark script
+
+### 2. Creating and running a Reactive Loop Runtime
+
+```python
+from semantic_agent_graph import ReactiveRuntime, Run
+
+# Wire them together into the runtime
+runtime = ReactiveRuntime(store=store, projection=projection)
+
+# Create a new run
+run = Run(
+    run_id="run_101",
+    label="Database Connection Task",
+    created_at="2026-06-23T12:00:00Z",
+    goal="Connect to Postgres on port 5432"
+)
+store.create_run(run)
+
+# Register behaviors subscribing to event types
+@runtime.behavior(on_events=["database.error"])
+def handle_db_error(rt, event):
+    print(f"Triggered by error: {event.payload.get('error')}")
+    # Emit a resolution attempt event
+    rt.emit("dns.flush", {"action": "Flushed DNS cache"})
+
+# Scope emissions to the active run
+with runtime.active_run(run.run_id):
+    runtime.emit("database.error", {"error": "Connection timed out"})
+    
+    # Process events in the queue
+    runtime.dispatch_loop()
+```
+
+### 3. Extracting Entities & Mapping Relations
+
+```python
+from semantic_agent_graph import EntityExtractor
+
+extractor = EntityExtractor(api_key="YOUR_GEMINI_API_KEY")
+
+log_message = "Failed to connect to postgresql database at port 5432: connectiontimeout"
+entities, relations = extractor.extract(log_message)
+
+for entity in entities:
+    # Normalized to Postgres, Port 5432, and TimeoutError
+    print(f"Extracted Entity: {entity.name} (Type: {entity.type})")
+
+for relation in relations:
+    print(f"Relation: ({relation.source})-[:{relation.type}]->({relation.target})")
+```
+
+### 4. Querying Successful Past Trajectories
+
+```python
+from semantic_agent_graph import Neo4jMemoryTool
+
+with Neo4jMemoryTool() as memory:
+    # Query Neo4j to find sub-graphs of successful runs that processed Postgres and TimeoutError
+    result = memory.query_past_trajectories(["Postgres", "TimeoutError"])
+    
+    print("Found nodes:")
+    for node in result["nodes"]:
+        print(f" - {node['id']} (Labels: {node['labels']})")
 ```
 
 ---
@@ -136,15 +224,21 @@ poetry install --no-root
 ```
 
 ### Running the Tests
-To run the automated test suite verifying SQLite concurrency, event sequencing, extraction, and caching:
+To run the automated test suite verifying SQLite concurrency, event sequencing, extraction, caching, and parsing:
 ```bash
 poetry run python -m pytest
 ```
 
 ### Running the Integration Demo
-To execute the simulated connection failure scenario (which runs with simulated fallbacks if a local Neo4j server is not active):
+To execute the simulated connection failure scenario:
 ```bash
 poetry run python demo.py
+```
+
+### Running the Trajectory Parser
+To run the SWE-agent trajectory ingestion demo locally (creates a sample JSON and ingests it):
+```bash
+poetry run python -m semantic_agent_graph.parser_swe
 ```
 
 ---
