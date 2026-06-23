@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Poetry](https://img.shields.io/badge/poetry-package-blueviolet.svg)](https://python-poetry.org/)
 
-**Semantic Agent Graph (SAG)** is an event-sourced agentic memory framework. It extends the core concept of reactive event-sourced agents by bridging **Episodic Memory** (the chronological trajectory of an agent's run experiences) with a global **Semantic Relation Layer** (reconstructing entities, system schemas, and error relationships). 
+**Semantic Agent Graph (SAG)** is an event-sourced cognitive memory framework for autonomous agents. It bridges **Episodic Memory** (the chronological trajectory of an agent's execution experience) with a global **Semantic Relation Layer** (representing software files, system configurations, and error tracebacks). 
 
 Rather than querying unstructured vector databases (RAG), the agent retrieves memory as a **structured sub-graph**, enabling it to recall the **exact chronological sequence of steps** (e.g. resolution pathways) that successfully solved a similar problem in past runs, and **cheaply fork** those pathways to test new hypotheses.
 
@@ -63,9 +63,56 @@ graph TD
     Event3 -.->|PROCESSED| Postgres
     Event4 -.->|PROCESSED| Postgres
     
-    style Episodic Trajectory Layer fill:#2b3a4a,stroke:#3867d6,stroke-width:2px,color:#fff
-    style Semantic Relation Layer fill:#1b2a3a,stroke:#20bf6b,stroke-width:2px,color:#fff
-    classDef default fill:#4b5563,stroke:#111827,color:#fff
+    style Episodic Trajectory Layer fill:#1e272e,stroke:#34e7e4,stroke-width:2px,color:#fff
+    style Semantic Relation Layer fill:#2c3e50,stroke:#0be881,stroke-width:2px,color:#fff
+    classDef default fill:#485460,stroke:#1e272e,color:#fff
+```
+
+---
+
+## Predictive Dead-End Detection & Backtracking
+
+> [!TIP]
+> **Enterprise Cost & Latency Saver:**  
+> Agentic loops are expensive and long-running. If an agent executes a sequence of actions that matches a path that failed in past runs, continuing down that path wastes time and LLM API cost.
+
+By mapping both **successful** and **failed** runs, SAG enables **proactive backtracking** during runtime. The agent queries its current trajectory prefix against the global memory graph. If the graph projects a 100% failure rate for that trajectory pattern, the runtime **aborts the branch, forks back to the last stable state, and redirects the agent.**
+
+```mermaid
+flowchart TD
+    %% Define Nodes
+    A[Agent Execution Start] --> B{Step Executed}
+    B --> C[Extract prefix entities]
+    C --> D[Query Neo4j Memory Graph]
+    D --> E{Historical Failure Rate >= 90%?}
+    
+    %% Decision branches
+    E -- No --> F[Proceed to next step]
+    F --> B
+    
+    E -- Yes: Dead End Detected --> G[Halt execution branch]
+    G --> H[Fork run back to last stable state]
+    H --> I[Inject feedback: 'Avoid path [X, Y, Z]']
+    I --> B
+    
+    %% Styles
+    style E fill:#ff3f34,stroke:#1e272e,color:#fff
+    style G fill:#ff5e57,stroke:#1e272e,color:#fff
+    style H fill:#ffd32a,stroke:#1e272e,color:#000
+    style I fill:#0be881,stroke:#1e272e,color:#000
+    classDef default fill:#485460,stroke:#1e272e,color:#fff
+```
+
+### The Cypher Memory Query
+```cypher
+// Query to detect if our current run's prefix entities match historical failures
+MATCH (h_run:Run)-[:CONTAINS]->(e:Event)-[:PROCESSED]->(shared:Entity)
+WHERE h_run.run_id <> $current_run_id AND shared.name IN $current_prefix_entities
+WITH h_run, count(shared) AS matched_entities_count
+MATCH (h_run)-[:CONTAINS]->(terminal:Event)
+WHERE terminal.type IN ["run.completed", "run.failed"]
+RETURN terminal.type AS outcome, count(h_run) AS run_count, matched_entities_count
+ORDER BY matched_entities_count DESC
 ```
 
 ---
@@ -83,12 +130,13 @@ graph LR
     Ingest -->|Append Logs| SQLite[(SQLite Event Store)]
     Ingest -->|Extract Files & Errors| Extractor[EntityExtractor]
     Extractor -->|Project Graph| Neo4j[(Neo4j DB)]
+    
+    style SQLite fill:#1e272e,stroke:#34e7e4,stroke-width:2px,color:#fff
+    style Neo4j fill:#2c3e50,stroke:#0be881,stroke-width:2px,color:#fff
 ```
 
 *   **Episodic Mapping:** Turns are mapped as `agent.step` events connected by chronological `[:NEXT]` edges and causal `[:CAUSED_BY]` links.
 *   **Semantic Mapping:** Files modified (e.g. `query.py`), pytest commands, and runtime exceptions (e.g. `AttributeError`) are automatically extracted and merged into global Neo4j `Entity` nodes, linked to the execution steps.
-
-For testing, running the parser without arguments automatically creates a mock-verified `sample_swe_trajectory.json` representing a real-world Django queryset bug fix.
 
 ---
 

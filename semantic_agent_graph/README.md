@@ -69,6 +69,7 @@ The runtime is built around a standardized schema of event types:
 *   `llm.requested`: Emitted right before calling an LLM provider. Includes prompt hash and configuration.
 *   `llm.responded`: Emitted after an LLM provider completes. Contains response payload and a `cached` boolean indicator.
 *   `run.completed` / `task.success`: Emitted when the run successfully finishes.
+*   `run.failed` / `task.failure`: Emitted when the run terminates in a failure state. This terminal outcome is indexed in Neo4j to fuel the **Predictive Dead-End Detection** engine.
 
 ---
 
@@ -125,7 +126,7 @@ def run_custom_agent(task_goal: str):
             
         # Emit final success or failure
         runtime.emit(
-            "run.completed",
+            "run.failed",
             payload={"status": "failed", "reason": "settings.py missing"},
             caused_by=step_1.id,
             actor="system"
