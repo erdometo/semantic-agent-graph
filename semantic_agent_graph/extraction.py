@@ -1,14 +1,12 @@
 import logging
 import re
+import os
+import json
+import sys
+import urllib.request
+import urllib.error
 from typing import Optional, List, Dict, Any, Tuple
 from pydantic import BaseModel, Field
-
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    genai = None
-    types = None
 
 from semantic_agent_graph.models import Entity, Relation
 
@@ -85,20 +83,27 @@ class ExtractionResponseSchema(BaseModel):
 
 class EntityExtractor:
     def __init__(self, api_key: Optional[str] = None):
-        self.client = None
-        import os
-        effective_key = api_key or os.environ.get("GEMINI_API_KEY")
-        if effective_key:
-            if genai is None:
-                logger.error("google-genai package is not installed or failed to import.")
-            else:
-                self.client = genai.Client(api_key=effective_key)
+        """
+        Initializes the EntityExtractor.
+        Loads the OpenRouter API key from the parameter or the OPENROUTER_API_KEY environment variable.
+        Loads local .env variables automatically unless running inside a test framework.
+        """
+        if "pytest" not in sys.modules:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+            except ImportError:
+                pass
+
+        self.openrouter_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        if not self.openrouter_key:
+            logger.debug("No OPENROUTER_API_KEY configured. EntityExtractor LLM fallback is disabled.")
 
     def extract(self, text: str) -> Tuple[List[Entity], List[Relation]]:
         """
         Resolves entities using a hybrid approach:
         - First attempts to match known standard patterns using a Regex parser.
-        - Falls back to an LLM-based parser if regex doesn't match and the Gemini client is initialized.
+        - Falls back to OpenRouter's LLM parser (NVIDIA Nemotron 3 Ultra) if regex doesn't match and API key is set.
         - Returns empty lists if neither can parse the text.
         - Applies canonical naming normalization to all extracted entities and adjusts relationships accordingly.
         """
@@ -107,15 +112,15 @@ class EntityExtractor:
         if entities:
             return entities, relations
 
-        # 2. Try LLM-based parser if client is initialized
-        if self.client is not None:
+        # 2. Try OpenRouter LLM-based parser if API key is initialized
+        if self.openrouter_key:
             try:
-                return self._extract_via_llm(text)
+                return self._extract_via_openrouter(text)
             except Exception as e:
-                logger.error(f"Error during LLM extraction: {e}")
+                logger.error(f"Error during OpenRouter LLM extraction: {e}")
                 return [], []
 
-        # 3. Fallback when client is not initialized and regex didn't match
+        # 3. Fallback when API key is missing
         return [], []
 
     def _extract_via_regex(self, text: str) -> Tuple[List[Entity], List[Relation]]:
@@ -176,7 +181,34 @@ class EntityExtractor:
 
         return [], []
 
-    def _extract_via_llm(self, text: str) -> Tuple[List[Entity], List[Relation]]:
+    def _extract_via_openrouter(self, text: str) -> Tuple[List[Entity], List[Relation]]:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/erdometo/semantic-agent-graph",
+            "X-Title": "Semantic Agent Graph"
+        }
+
+        # Uses environment variable or falls back to nvidia/nemotron-3-ultra-550b-a55b:free
+        model = os.environ.get("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+
+        system_instruction = (
+            "You are an expert system that extracts structured entities and relations from developer "
+            "and system logs. Identify systems, errors, configurations, components, users, services, "
+            "or IPs, and link them using descriptive relations (e.g. 'CONFIGURED_WITH', 'ENCOUNTERED', "
+            "'CONNECTED_FROM', 'CALLED').\n"
+            "You must respond ONLY with a JSON object adhering to this schema:\n"
+            "{\n"
+            "  \"entities\": [\n"
+            "    {\"id\": \"string\", \"type\": \"string\", \"name\": \"string\", \"data\": {}}\n"
+            "  ],\n"
+            "  \"relations\": [\n"
+            "    {\"id\": \"string\", \"type\": \"string\", \"source\": \"string\", \"target\": \"string\", \"data\": {}}\n"
+            "  ]\n"
+            "}"
+        )
+
         prompt_text = (
             f"Analyze the following developer/system log text and extract all semantic entities "
             f"and their relations.\n\n"
@@ -185,30 +217,39 @@ class EntityExtractor:
             f"Make sure that any relation's source and target match the ID of an extracted entity."
         )
 
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ExtractionResponseSchema,
-            system_instruction=(
-                "You are an expert system that extracts structured entities and relations from developer "
-                "and system logs. Identify systems, errors, configurations, components, users, services, "
-                "or IPs, and link them using descriptive relations (e.g. 'CONFIGURED_WITH', 'ENCOUNTERED', "
-                "'CONNECTED_FROM', 'CALLED')."
-            )
-        )
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt_text}
+            ],
+            "response_format": {"type": "json_object"}
+        }
 
-        response = self.client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=prompt_text,
-            config=config
-        )
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
-        raw_result = None
-        # Try response.parsed if google-genai supports it, or parse response.text manually
-        if hasattr(response, 'parsed') and response.parsed is not None:
-            raw_result = response.parsed
-        elif response.text:
-            raw_result = ExtractionResponseSchema.model_validate_json(response.text)
-        else:
+        # Execute HTTP POST request using Python's standard urllib library
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                res_body = response.read().decode("utf-8")
+                res_data = json.loads(res_body)
+                
+                # Verify structure of response
+                choices = res_data.get("choices")
+                if not choices:
+                    logger.error(f"OpenRouter returned empty choices: {res_data}")
+                    return [], []
+                    
+                content = choices[0]["message"]["content"]
+                
+                # Parse response content into ExtractionResponseSchema Pydantic model
+                raw_result = ExtractionResponseSchema.model_validate_json(content)
+        except urllib.error.HTTPError as he:
+            logger.error(f"HTTPError contacting OpenRouter API ({he.code}): {he.read().decode('utf-8')}")
+            return [], []
+        except Exception as e:
+            logger.error(f"Failed to communicate with or parse OpenRouter response: {e}")
             return [], []
 
         entities = []

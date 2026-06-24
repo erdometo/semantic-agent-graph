@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import MagicMock, patch
 from semantic_agent_graph.extraction import EntityExtractor, normalize_name, get_canonical_type
 from semantic_agent_graph.models import Entity, Relation
@@ -37,6 +38,7 @@ def test_regex_matching_connection_logs():
     text = "Connection to postgresql on port 5432 failed with TimeoutError"
     entities, relations = extractor.extract(text)
     
+    # Verify correct extraction
     assert len(entities) == 3
     assert any(e.name == "Postgres" and e.type == "System" for e in entities)
     assert any(e.name == "Port 5432" and e.type == "Configuration" for e in entities)
@@ -78,90 +80,65 @@ def test_regex_matching_partial_logs():
 
 
 def test_fallback_behavior_no_api_key():
-    # If API key is missing (explicitly not provided) and text doesn't match regex
+    # If API key is missing and text doesn't match regex, return empty lists
     extractor = EntityExtractor(api_key=None)
-    assert extractor.client is None
+    assert extractor.openrouter_key is None
     
     entities, relations = extractor.extract("User alice logged in from ip 192.168.1.1")
     assert entities == []
     assert relations == []
 
 
-def test_llm_based_parser_mock():
-    # Setup mock for google.genai client
-    with patch("google.genai.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-        
-        # Initialize extractor with api_key so client is created
-        extractor = EntityExtractor(api_key="test_api_key")
-        assert extractor.client is not None
-        
-        # Setup mock LLM response
-        from semantic_agent_graph.extraction import ExtractionResponseSchema, ExtractedEntity, ExtractedRelation
-        
-        mock_parsed = ExtractionResponseSchema(
-            entities=[
-                ExtractedEntity(id="ent_1", type="User", name="alice", data={"role": "admin"}),
-                # Should normalize pg to Postgres and type to System
-                ExtractedEntity(id="ent_2", type="Database", name="pg", data={}),
-                # Should normalize timeout to TimeoutError and type to Error
-                ExtractedEntity(id="ent_3", type="Exception", name="timeout", data={})
-            ],
-            relations=[
-                ExtractedRelation(id="r1", type="ACCESSED", source="ent_1", target="ent_2", data={}),
-                ExtractedRelation(id="r2", type="ENCOUNTERED", source="ent_2", target="ent_3", data={})
-            ]
-        )
-        
-        mock_response = MagicMock()
-        mock_response.parsed = mock_parsed
-        mock_response.text = '{"entities": [], "relations": []}' # fallback text
-        
-        extractor.client.models.generate_content.return_value = mock_response
-        
-        # This text does NOT match the connection log regex condition
-        text = "User alice logged in from ip 192.168.1.1 and started process 999."
-        entities, relations = extractor.extract(text)
-        
-        # Verify generate_content was called
-        extractor.client.models.generate_content.assert_called_once()
-        
-        # Verify entities normalized correctly
-        assert len(entities) == 3
-        # ent_1: alice -> name is alice, type is User (not canonicalized)
-        assert any(e.name == "alice" and e.type == "User" and e.id == "alice" for e in entities)
-        # ent_2: pg -> name normalized to Postgres, type to System
-        assert any(e.name == "Postgres" and e.type == "System" and e.id == "Postgres" for e in entities)
-        # ent_3: timeout -> name normalized to TimeoutError, type to Error
-        assert any(e.name == "TimeoutError" and e.type == "Error" and e.id == "TimeoutError" for e in entities)
-        
-        # Verify relations updated IDs to normalized names
-        assert len(relations) == 2
-        # r1: ent_1 -> ent_2 maps to alice -> Postgres
-        assert any(r.type == "ACCESSED" and r.source == "alice" and r.target == "Postgres" for r in relations)
-        # r2: ent_2 -> ent_3 maps to Postgres -> TimeoutError
-        assert any(r.type == "ENCOUNTERED" and r.source == "Postgres" and r.target == "TimeoutError" for r in relations)
-
-
-def test_llm_based_parser_fallback_to_text():
-    # Test case where response.parsed is None, but response.text has JSON string
-    with patch("google.genai.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-        
-        extractor = EntityExtractor(api_key="test_api_key")
-        
-        mock_response = MagicMock()
-        mock_response.parsed = None
-        mock_response.text = '{"entities": [{"id": "sys", "type": "db", "name": "postgresql"}], "relations": []}'
-        
-        extractor.client.models.generate_content.return_value = mock_response
-        
-        entities, relations = extractor.extract("Non-matching regex text message")
-        
-        assert len(entities) == 1
-        assert entities[0].name == "Postgres"
-        assert entities[0].type == "System"
-        assert entities[0].id == "Postgres"
-        assert len(relations) == 0
+@patch("urllib.request.urlopen")
+def test_openrouter_based_parser_mock(mock_urlopen):
+    # Mock return value for urllib.request.urlopen
+    mock_response_obj = MagicMock()
+    
+    inner_json = {
+        "entities": [
+            {"id": "ent_1", "type": "User", "name": "alice", "data": {"role": "admin"}},
+            # Should normalize pg to Postgres and type to System
+            {"id": "ent_2", "type": "Database", "name": "pg", "data": {}},
+            # Should normalize timeout to TimeoutError and type to Error
+            {"id": "ent_3", "type": "Exception", "name": "timeout", "data": {}}
+        ],
+        "relations": [
+            {"id": "r1", "type": "ACCESSED", "source": "ent_1", "target": "ent_2", "data": {}},
+            {"id": "r2", "type": "ENCOUNTERED", "source": "ent_2", "target": "ent_3", "data": {}}
+        ]
+    }
+    
+    openrouter_response = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(inner_json)
+                }
+            }
+        ]
+    }
+    
+    mock_response_obj.read.return_value = json.dumps(openrouter_response).encode("utf-8")
+    mock_urlopen.return_value.__enter__.return_value = mock_response_obj
+    
+    # Initialize extractor with api_key so client is active
+    extractor = EntityExtractor(api_key="test_openrouter_key")
+    assert extractor.openrouter_key == "test_openrouter_key"
+    
+    # Non-matching regex text
+    text = "User alice logged in from ip 192.168.1.1 and started process 999."
+    entities, relations = extractor.extract(text)
+    
+    # Verify urlopen was called once
+    mock_urlopen.assert_called_once()
+    
+    # Verify entities normalized correctly
+    assert len(entities) == 3
+    assert any(e.name == "alice" and e.type == "User" and e.id == "alice" for e in entities)
+    assert any(e.name == "Postgres" and e.type == "System" and e.id == "Postgres" for e in entities)
+    assert any(e.name == "TimeoutError" and e.type == "Error" and e.id == "TimeoutError" for e in entities)
+    
+    # Verify relations updated IDs to normalized names
+    assert len(relations) == 2
+    assert any(r.type == "ACCESSED" and r.source == "alice" and r.target == "Postgres" for r in relations)
+    assert any(r.type == "ENCOUNTERED" and r.source == "Postgres" and r.target == "TimeoutError" for r in relations)
