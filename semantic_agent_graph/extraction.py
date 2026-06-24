@@ -3,6 +3,8 @@ import re
 import os
 import json
 import sys
+import time
+import http.client
 import urllib.request
 import urllib.error
 from typing import Optional, List, Dict, Any, Tuple
@@ -229,75 +231,101 @@ class EntityExtractor:
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
-        # Execute HTTP POST request using Python's standard urllib library
-        try:
-            with urllib.request.urlopen(req, timeout=20) as response:
-                res_body = response.read().decode("utf-8")
-                res_data = json.loads(res_body)
-                
-                # Verify structure of response
-                choices = res_data.get("choices")
-                if not choices:
-                    logger.error(f"OpenRouter returned empty choices: {res_data}")
-                    return [], []
+        # Retry configuration
+        max_retries = 3
+        backoff_seconds = 2.0
+
+        for attempt in range(max_retries):
+            try:
+                with urllib.request.urlopen(req, timeout=20) as response:
+                    res_body = response.read().decode("utf-8")
+                    res_data = json.loads(res_body)
                     
-                content = choices[0]["message"]["content"]
-                
-                # Parse response content into ExtractionResponseSchema Pydantic model
-                raw_result = ExtractionResponseSchema.model_validate_json(content)
-        except urllib.error.HTTPError as he:
-            logger.error(f"HTTPError contacting OpenRouter API ({he.code}): {he.read().decode('utf-8')}")
-            return [], []
-        except Exception as e:
-            logger.error(f"Failed to communicate with or parse OpenRouter response: {e}")
-            return [], []
+                    choices = res_data.get("choices")
+                    if not choices:
+                        logger.error(f"OpenRouter returned empty choices: {res_data}")
+                        return [], []
+                        
+                    content = choices[0]["message"]["content"].strip()
+                    
+                    # Strip markdown code blocks if the model wrapped the JSON (e.g. ```json ... ```)
+                    if content.startswith("```"):
+                        content = re.sub(r"^```(?:json)?\n?", "", content, flags=re.IGNORECASE)
+                        content = re.sub(r"\n?```$", "", content).strip()
+                    
+                    # Parse response content into ExtractionResponseSchema Pydantic model
+                    raw_result = ExtractionResponseSchema.model_validate_json(content)
+                    
+                    entities = []
+                    relations = []
+                    id_mapping = {}
 
-        entities = []
-        relations = []
-        id_mapping = {}
+                    # Normalize and construct Entity objects
+                    for ent in raw_result.entities:
+                        normalized_name = normalize_name(ent.name)
+                        normalized_type = get_canonical_type(normalized_name, ent.type)
+                        normalized_id = normalized_name
+                        
+                        id_mapping[ent.id] = normalized_id
 
-        # Normalize and construct Entity objects
-        for ent in raw_result.entities:
-            normalized_name = normalize_name(ent.name)
-            normalized_type = get_canonical_type(normalized_name, ent.type)
-            # Use normalized name as canonical ID to align with regex extractor patterns
-            normalized_id = normalized_name
-            
-            id_mapping[ent.id] = normalized_id
+                        entities.append(Entity(
+                            id=normalized_id,
+                            type=normalized_type,
+                            name=normalized_name,
+                            data=ent.data or {}
+                        ))
 
-            entities.append(Entity(
-                id=normalized_id,
-                type=normalized_type,
-                name=normalized_name,
-                data=ent.data or {}
-            ))
+                    # Normalize relations
+                    for rel in raw_result.relations:
+                        mapped_source = id_mapping.get(rel.source, rel.source)
+                        mapped_target = id_mapping.get(rel.target, rel.target)
+                        new_rel_id = f"{mapped_source}-{rel.type}-{mapped_target}"
 
-        # Normalize relations
-        for rel in raw_result.relations:
-            mapped_source = id_mapping.get(rel.source, rel.source)
-            mapped_target = id_mapping.get(rel.target, rel.target)
-            new_rel_id = f"{mapped_source}-{rel.type}-{mapped_target}"
+                        relations.append(Relation(
+                            id=new_rel_id,
+                            type=rel.type,
+                            source=mapped_source,
+                            target=mapped_target,
+                            data=rel.data or {}
+                        ))
 
-            relations.append(Relation(
-                id=new_rel_id,
-                type=rel.type,
-                source=mapped_source,
-                target=mapped_target,
-                data=rel.data or {}
-            ))
+                    # Deduplicate entities
+                    seen_entities = {}
+                    for ent in entities:
+                        if ent.id not in seen_entities:
+                            seen_entities[ent.id] = ent
+                    entities = list(seen_entities.values())
 
-        # Deduplicate entities
-        seen_entities = {}
-        for ent in entities:
-            if ent.id not in seen_entities:
-                seen_entities[ent.id] = ent
-        entities = list(seen_entities.values())
+                    # Deduplicate relations
+                    seen_relations = {}
+                    for rel in relations:
+                        if rel.id not in seen_relations:
+                            seen_relations[rel.id] = rel
+                    relations = list(seen_relations.values())
 
-        # Deduplicate relations
-        seen_relations = {}
-        for rel in relations:
-            if rel.id not in seen_relations:
-                seen_relations[rel.id] = rel
-        relations = list(seen_relations.values())
+                    return entities, relations
 
-        return entities, relations
+            except urllib.error.HTTPError as he:
+                if he.code == 429 or he.code >= 500:
+                    # Rate limit or server error - retry with backoff
+                    if attempt < max_retries - 1:
+                        logger.warning(f"OpenRouter returned {he.code} (attempt {attempt+1}/{max_retries}). Retrying in {backoff_seconds}s...")
+                        time.sleep(backoff_seconds)
+                        backoff_seconds *= 2
+                        continue
+                logger.error(f"HTTPError contacting OpenRouter API ({he.code}): {he.read().decode('utf-8')}")
+                return [], []
+            except (http.client.IncompleteRead, urllib.error.URLError) as ce:
+                # Connection reset or drop - retry with backoff
+                if attempt < max_retries - 1:
+                    logger.warning(f"OpenRouter connection error: {ce} (attempt {attempt+1}/{max_retries}). Retrying in {backoff_seconds}s...")
+                    time.sleep(backoff_seconds)
+                    backoff_seconds *= 2
+                    continue
+                logger.error(f"Connection error contacting OpenRouter API: {ce}")
+                return [], []
+            except Exception as e:
+                logger.error(f"Failed to communicate with or parse OpenRouter response: {e}")
+                return [], []
+
+        return [], []
