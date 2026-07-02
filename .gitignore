@@ -44,3 +44,20 @@ env/
 *.njsproj
 *.sln
 *.swp
+
+# Neo4j binary distribution
+neo4j-community-*/
+
+# SQLite WAL/SHM files
+*.db-shm
+*.db-wal
+
+# Node modules
+node_modules/
+
+# Dashboard build
+dashboard/node_modules/
+dashboard/dist/
+
+# Scratch / temporary data
+scratch_*.json

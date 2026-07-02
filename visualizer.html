@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>sAG Interactive Graph Visualizer</title>
+    
+    <!-- Google Fonts (Inter) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Vis.js Network CDN -->
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    
+    <!-- Neo4j Driver CDN -->
+    <script src="https://unpkg.com/neo4j-driver@5.15.0/lib/browser/neo4j-web.min.js"></script>
+    
+    <!-- Lucide Icons CDN -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Custom Premium Styles -->
+    <style>
+        :root {
+            --bg-main: #0B0F19;
+            --bg-panel: rgba(17, 24, 39, 0.7);
+            --bg-card: rgba(31, 41, 55, 0.5);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(255, 255, 255, 0.15);
+            --text-primary: #F3F4F6;
+            --text-secondary: #9CA3AF;
+            --text-muted: #6B7280;
+            --color-accent: #3B82F6;
+            --color-accent-glow: rgba(59, 130, 246, 0.35);
+            --color-success: #10B981;
+            --color-error: #EF4444;
+            --color-warning: #F59E0B;
+            --font-main: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-main);
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+        }
+
+        /* Sidebar styling with Glassmorphism */
+        .sidebar {
+            width: 380px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            z-index: 10;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .header {
+            padding: 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-glow {
+            width: 32px;
+            height: 32px;
+            background: radial-gradient(circle, var(--color-accent) 0%, transparent 70%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 16px var(--color-accent-glow);
+        }
+
+        .logo-glow i {
+            color: #fff;
+            font-size: 16px;
+        }
+
+        .header h1 {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #FFF 0%, #A5B4FC 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .search-container {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .search-wrapper {
+            position: relative;
+        }
+
+        .search-wrapper i {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 16px;
+        }
+
+        .search-input {
+            width: 100%;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px 12px 10px 38px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .search-input:focus {
+            border-color: var(--color-accent);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }
+
+        .run-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        /* Run item cards */
+        .run-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 14px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .run-card::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            width: 3px;
+            background: var(--color-accent);
+            transform: scaleY(0);
+            transition: transform 0.2s ease;
+        }
+
+        .run-card:hover {
+            border-color: var(--border-hover);
+            background: rgba(55, 65, 81, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .run-card.active {
+            border-color: var(--color-accent);
+            background: rgba(59, 130, 246, 0.08);
+        }
+
+        .run-card.active::before {
+            transform: scaleY(1);
+        }
+
+        .run-card h3 {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .run-card p {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            height: 32px;
+            margin-bottom: 6px;
+        }
+
+        .run-card-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        /* Main Viewport styling */
+        .main-content {
+            flex: 1;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        .toolbar {
+            height: 80px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-panel);
+            backdrop-filter: blur(16px);
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 5;
+        }
+
+        .toolbar-info h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .toolbar-info p {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .toolbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .btn {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .btn:hover {
+            border-color: var(--border-hover);
+            background: rgba(55, 65, 81, 0.7);
+        }
+
+        .btn.primary {
+            background: var(--color-accent);
+            border-color: var(--color-accent);
+            box-shadow: 0 0 12px rgba(59, 130, 246, 0.25);
+        }
+
+        .btn.primary:hover {
+            background: #2563EB;
+        }
+
+        .btn-icon {
+            padding: 8px;
+            border-radius: 6px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .btn-icon:hover {
+            border-color: var(--border-hover);
+            background: rgba(55, 65, 81, 0.7);
+        }
+
+        /* Canvas and Graph viewports */
+        .viewport {
+            flex: 1;
+            position: relative;
+            background-color: var(--bg-main);
+        }
+
+        #network-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Legend container */
+        .legend {
+            position: absolute;
+            bottom: 24px;
+            left: 24px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 5;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .legend-color {
+            width: 14px;
+            height: 14px;
+            border-radius: 4px;
+        }
+
+        /* Details Inspector Panel */
+        .inspector {
+            width: 350px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(16px);
+            border-left: 1px solid var(--border-color);
+            height: 100%;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            overflow-y: auto;
+            position: absolute;
+            right: 0;
+            top: 0;
+            transform: translateX(100%);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: -10px 0 30px rgba(0, 0, 0, 0.4);
+        }
+
+        .inspector.open {
+            transform: translateX(0);
+        }
+
+        .inspector-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 16px;
+            margin-bottom: 20px;
+        }
+
+        .inspector-header h2 {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .inspector-close {
+            color: var(--text-muted);
+            cursor: pointer;
+            background: none;
+            border: none;
+            outline: none;
+        }
+
+        .inspector-close:hover {
+            color: var(--text-primary);
+        }
+
+        .property-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 16px;
+        }
+
+        .property-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+        }
+
+        .property-value {
+            font-size: 13px;
+            color: var(--text-primary);
+            word-break: break-all;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            padding: 10px;
+            border-radius: 6px;
+            font-family: Consolas, Monaco, monospace;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+
+        /* Toggle tabs for Graph vs Timeline */
+        .tab-bar {
+            display: flex;
+            gap: 4px;
+            background: rgba(0, 0, 0, 0.25);
+            padding: 4px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            width: fit-content;
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            padding: 6px 16px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn.active {
+            background: var(--color-accent);
+            color: #fff;
+            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        }
+
+        /* Step Log Timeline styling */
+        #timeline-view {
+            padding: 24px;
+            overflow-y: auto;
+            height: 100%;
+            display: none;
+            flex-direction: column;
+            gap: 20px;
+            background: var(--bg-main);
+        }
+
+        .timeline-card {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            margin-left: 20px;
+            position: relative;
+        }
+
+        .timeline-card::after {
+            content: '';
+            position: absolute;
+            left: -27px;
+            top: 24px;
+            width: 12px;
+            height: 12px;
+            background: var(--color-accent);
+            border: 3px solid var(--bg-main);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--color-accent-glow);
+        }
+
+        .timeline-card.failed::after {
+            background: var(--color-error);
+            box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+        }
+
+        .timeline-card.success::after {
+            background: var(--color-success);
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+        }
+
+        .timeline-line {
+            position: absolute;
+            left: 12px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--border-color);
+            z-index: 1;
+        }
+
+        .timeline-wrapper {
+            position: relative;
+            padding-left: 20px;
+        }
+
+        .timeline-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .timeline-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .timeline-step {
+            font-size: 11px;
+            color: var(--text-muted);
+            background: var(--bg-card);
+            padding: 2px 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+        }
+
+        .timeline-thought {
+            font-style: italic;
+            color: var(--text-secondary);
+            font-size: 13px;
+            line-height: 1.5;
+            margin-bottom: 12px;
+            border-left: 2px solid var(--text-muted);
+            padding-left: 10px;
+        }
+
+        .timeline-action {
+            font-family: Consolas, monospace;
+            background: #05070C;
+            border: 1px solid var(--border-color);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            margin-bottom: 10px;
+            color: #C0CAF5;
+        }
+
+        .timeline-obs {
+            background: #05070C;
+            border: 1px solid rgba(255,255,255,0.03);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 11.5px;
+            color: #9ECE6A;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: Consolas, monospace;
+            white-space: pre-wrap;
+        }
+
+        .status-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 4px 8px;
+            border-radius: 12px;
+            text-transform: uppercase;
+        }
+
+        .status-badge.completed {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--color-success);
+        }
+
+        .status-badge.failed {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--color-error);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- SIDEBAR: Run selector -->
+    <div class="sidebar">
+        <div class="header">
+            <div class="logo-glow">
+                <i data-lucide="network"></i>
+            </div>
+            <h1>sAG Interactive Explorer</h1>
+        </div>
+        
+        <div class="search-container">
+            <div class="search-wrapper">
+                <i data-lucide="search"></i>
+                <input type="text" id="run-search" class="search-input" placeholder="Search 978 runs...">
+            </div>
+            
+            <div class="tab-bar">
+                <button id="tab-graph-btn" class="tab-btn active">Graph View</button>
+                <button id="tab-timeline-btn" class="tab-btn">Timeline log</button>
+            </div>
+        </div>
+
+        <div class="run-list" id="runs-container">
+            <!-- Dynamically populated runs -->
+            <div style="padding:20px; text-align:center; color:var(--text-muted);">Connecting to Neo4j...</div>
+        </div>
+    </div>
+
+    <!-- MAIN VIEWPORT -->
+    <div class="main-content">
+        <!-- Toolbar header -->
+        <div class="toolbar">
+            <div class="toolbar-info">
+                <h2 id="active-run-id">Select a Run</h2>
+                <p id="active-run-goal">Select a trajectory run from the sidebar to inspect its nodes and relationships.</p>
+            </div>
+            <div class="toolbar-actions">
+                <button class="btn" id="physics-toggle">
+                    <i data-lucide="zap"></i> Disable Physics
+                </button>
+                <button class="btn-icon" id="fit-view" title="Fit View">
+                    <i data-lucide="maximize"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Tab contents -->
+        <div class="viewport" id="graph-viewport">
+            <div id="network-canvas"></div>
+            
+            <!-- Graph Legend -->
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-color" style="background:#3B82F6; box-shadow:0 0 8px rgba(59, 130, 246, 0.5)"></div>
+                    <span>Run node (Session)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background:#10B981; box-shadow:0 0 8px rgba(16, 185, 129, 0.5)"></div>
+                    <span>Event (Chronological steps)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background:#F59E0B; box-shadow:0 0 8px rgba(245, 158, 11, 0.5)"></div>
+                    <span>Entity (Normalized concept)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background:#EF4444; box-shadow:0 0 8px rgba(239, 68, 68, 0.5)"></div>
+                    <span>Terminal / Backtrack / Failure</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="timeline-view">
+            <!-- Timeline details -->
+        </div>
+
+        <!-- DETAILS SIDE PANEL -->
+        <div class="inspector" id="node-inspector">
+            <div class="inspector-header">
+                <h2 id="inspect-node-type">Node Inspector</h2>
+                <button class="inspector-close" id="inspector-close-btn">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+            <div id="inspector-properties">
+                <!-- Properties trace -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Script for Connection and Rendering -->
+    <script>
+        // Lucide icons init
+        lucide.createIcons();
+
+        // 1. Establish Neo4j connection (auth disabled locally)
+        const driver = neo4j.driver("bolt://localhost:7687", neo4j.auth.basic("", ""));
+        let allRuns = [];
+        let networkInstance = null;
+        let activeRunData = null;
+
+        // Dom Elements
+        const runsContainer = document.getElementById("runs-container");
+        const searchInput = document.getElementById("run-search");
+        const activeRunTitle = document.getElementById("active-run-id");
+        const activeRunGoal = document.getElementById("active-run-goal");
+        const inspectorPanel = document.getElementById("node-inspector");
+        const inspectorClose = document.getElementById("inspector-close-btn");
+        const inspectorProperties = document.getElementById("inspector-properties");
+        const inspectorTitle = document.getElementById("inspect-node-type");
+        const tabGraphBtn = document.getElementById("tab-graph-btn");
+        const tabTimelineBtn = document.getElementById("tab-timeline-btn");
+        const graphViewport = document.getElementById("graph-viewport");
+        const timelineView = document.getElementById("timeline-view");
+        const fitViewBtn = document.getElementById("fit-view");
+        const physicsToggleBtn = document.getElementById("physics-toggle");
+
+        let physicsEnabled = true;
+
+        // Fetch runs
+        async function loadRuns() {
+            const session = driver.session();
+            try {
+                const res = await session.run(`
+                    MATCH (r:Run)
+                    OPTIONAL MATCH (r)-[:CONTAINS]->(terminal:Event)
+                    WHERE terminal.type IN ["run.completed", "run.failed", "run.backtracked"]
+                    RETURN r.run_id AS run_id, 
+                           r.goal AS goal, 
+                           r.created_at AS created_at, 
+                           terminal.type AS outcome
+                    ORDER BY r.created_at DESC
+                `);
+                allRuns = res.records.map(rec => ({
+                    run_id: rec.get("run_id"),
+                    goal: rec.get("goal") || "Resolve GitHub issue.",
+                    created_at: rec.get("created_at") ? rec.get("created_at").substring(0, 16).replace("T", " ") : "N/A",
+                    outcome: rec.get("outcome") || "active"
+                }));
+                renderRunsList(allRuns);
+            } catch (err) {
+                console.error("Could not fetch runs from Neo4j:", err);
+                runsContainer.innerHTML = `<div style="padding:20px; text-align:center; color:var(--color-error);">Could not connect to Neo4j database. Ensure the database is running at bolt://localhost:7687.</div>`;
+            } finally {
+                await session.close();
+            }
+        }
+
+        // Render run list
+        function renderRunsList(runs) {
+            if (runs.length === 0) {
+                runsContainer.innerHTML = `<div style="padding:20px; text-align:center; color:var(--text-muted);">No runs found matching search.</div>`;
+                return;
+            }
+            runsContainer.innerHTML = runs.map(run => {
+                let badgeClass = run.outcome.replace(".", "_");
+                let badgeLabel = run.outcome === "run.completed" ? "Success" : (run.outcome === "run.failed" ? "Failed" : (run.outcome === "run.backtracked" ? "Backtracked" : "Active"));
+                let badgeStyle = run.outcome === "run.completed" ? "completed" : "failed";
+                return `
+                    <div class="run-card" onclick="selectRun('${run.run_id}')" id="card-${run.run_id}">
+                        <h3>${run.run_id}</h3>
+                        <p title="${run.goal}">${run.goal}</p>
+                        <div class="run-card-meta">
+                            <span>${run.created_at}</span>
+                            <span class="status-badge ${badgeStyle}">${badgeLabel}</span>
+                        </div>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        // Search runs
+        searchInput.addEventListener("input", (e) => {
+            const query = e.target.value.toLowerCase();
+            const filtered = allRuns.filter(r => 
+                r.run_id.toLowerCase().includes(query) || 
+                r.goal.toLowerCase().includes(query)
+            );
+            renderRunsList(filtered);
+        });
+
+        // Select a run
+        async function selectRun(runId) {
+            // Remove active classes
+            document.querySelectorAll(".run-card").forEach(el => el.classList.remove("active"));
+            const card = document.getElementById(`card-${runId}`);
+            if (card) card.classList.add("active");
+
+            const selectedRun = allRuns.find(r => r.run_id === runId);
+            activeRunTitle.innerText = runId;
+            activeRunGoal.innerText = selectedRun.goal;
+
+            // Close inspector
+            inspectorPanel.classList.remove("open");
+
+            await fetchRunGraph(runId);
+        }
+
+        // Query graph data
+        async function fetchRunGraph(runId) {
+            const session = driver.session();
+            try {
+                const res = await session.run(`
+                    MATCH (r:Run {run_id: $run_id})-[:CONTAINS]->(e:Event)
+                    OPTIONAL MATCH (e)-[rel_next:NEXT]->(next_e:Event) WHERE (r)-[:CONTAINS]->(next_e)
+                    OPTIONAL MATCH (e)-[rel_processed:PROCESSED]->(ent:Entity)
+                    RETURN e, rel_next, next_e, rel_processed, ent
+                `, { run_id: runId });
+
+                const nodesMap = {};
+                const edgesMap = {};
+
+                // Process records
+                res.records.forEach(rec => {
+                    const e = rec.get("e");
+                    const ent = rec.get("ent");
+                    const rel_next = rec.get("rel_next");
+                    const rel_processed = rec.get("rel_processed");
+
+                    // 1. Process Event node
+                    if (e) {
+                        const eNode = e.properties;
+                        let color = "#3B82F6"; // default blue
+                        let border = "#1D4ED8";
+                        let fontColor = "#fff";
+                        
+                        if (eNode.type === "run.completed") {
+                            color = "#10B981"; // success green
+                            border = "#047857";
+                        } else if (eNode.type === "run.failed") {
+                            color = "#EF4444"; // failure red
+                            border = "#B91C1C";
+                        } else if (eNode.type === "run.backtracked") {
+                            color = "#F59E0B"; // warning orange
+                            border = "#D97706";
+                        }
+
+                        nodesMap[e.elementId] = {
+                            id: e.elementId,
+                            label: eNode.type,
+                            title: `Event ID: ${eNode.id}\nType: ${eNode.type}`,
+                            color: { background: color, border: border, highlight: { background: color, border: "#fff" } },
+                            font: { color: fontColor },
+                            shape: "box",
+                            shadow: true,
+                            properties: eNode,
+                            rawLabel: "Event"
+                        };
+                    }
+
+                    // 2. Process Entity node
+                    if (ent) {
+                        const entNode = ent.properties;
+                        let color = "#F59E0B"; // orange/gold for entities
+                        let border = "#D97706";
+                        let shape = "ellipse";
+                        
+                        if (entNode.type === "Error") {
+                            color = "#EF4444";
+                            border = "#B91C1C";
+                        } else if (entNode.type === "File") {
+                            color = "#8B5CF6"; // purple for files
+                            border = "#6D28D9";
+                        } else if (entNode.type === "Tool") {
+                            color = "#10B981"; // green for tools
+                            border = "#047857";
+                        }
+
+                        nodesMap[ent.elementId] = {
+                            id: ent.elementId,
+                            label: entNode.name,
+                            title: `Entity: ${entNode.name}\nType: ${entNode.type}`,
+                            color: { background: color, border: border, highlight: { background: color, border: "#fff" } },
+                            font: { color: "#fff" },
+                            shape: shape,
+                            shadow: true,
+                            properties: entNode,
+                            rawLabel: "Entity"
+                        };
+                    }
+
+                    // 3. Process edges
+                    if (rel_next) {
+                        const start = rel_next.startNodeElementId;
+                        const end = rel_next.endNodeElementId;
+                        const edgeId = `${start}-NEXT-${end}`;
+                        edgesMap[edgeId] = {
+                            id: edgeId,
+                            from: start,
+                            to: end,
+                            label: "NEXT",
+                            color: { color: "rgba(255,255,255,0.25)", highlight: "#fff" },
+                            arrows: "to",
+                            font: { color: "rgba(255,255,255,0.4)", size: 10, strokeWidth: 0 }
+                        };
+                    }
+
+                    if (rel_processed) {
+                        const start = rel_processed.startNodeElementId;
+                        const end = rel_processed.endNodeElementId;
+                        const edgeId = `${start}-PROCESSED-${end}`;
+                        edgesMap[edgeId] = {
+                            id: edgeId,
+                            from: start,
+                            to: end,
+                            label: "PROCESSED",
+                            color: { color: "rgba(245,158,11,0.2)", highlight: "#F59E0B" },
+                            arrows: "to",
+                            dashes: true,
+                            font: { color: "rgba(245,158,11,0.35)", size: 9, strokeWidth: 0 }
+                        };
+                    }
+                });
+
+                // Add Run node itself
+                const runNodeId = "run_" + runId;
+                nodesMap[runNodeId] = {
+                    id: runNodeId,
+                    label: "Run Context",
+                    title: `Run ID: ${runId}`,
+                    color: { background: "#1F2937", border: "#374151", highlight: { background: "#1F2937", border: "#fff" } },
+                    font: { color: "#fff", face: "monospace" },
+                    shape: "hexagon",
+                    shadow: true,
+                    properties: { run_id: runId, goal: activeRunGoal.innerText },
+                    rawLabel: "Run"
+                };
+
+                // Connect Run context to first event node
+                const events = Object.values(nodesMap).filter(n => n.rawLabel === "Event");
+                events.sort((a,b) => (a.properties.seq || 0) - (b.properties.seq || 0));
+                
+                if (events.length > 0) {
+                    const firstEv = events[0];
+                    const runEdgeId = `${runNodeId}-CONTAINS-${firstEv.id}`;
+                    edgesMap[runEdgeId] = {
+                        id: runEdgeId,
+                        from: runNodeId,
+                        to: firstEv.id,
+                        label: "CONTAINS",
+                        color: { color: "rgba(59,130,246,0.3)", highlight: "#3B82F6" },
+                        arrows: "to",
+                        font: { color: "rgba(59,130,246,0.5)", size: 9, strokeWidth: 0 }
+                    };
+                }
+
+                activeRunData = {
+                    nodes: Object.values(nodesMap),
+                    edges: Object.values(edgesMap),
+                    events: events
+                };
+
+                renderGraph();
+                renderTimeline();
+            } catch (err) {
+                console.error("Error loading run graph details:", err);
+            } finally {
+                await session.close();
+            }
+        }
+
+        // Render Graph
+        function renderGraph() {
+            const container = document.getElementById("network-canvas");
+            const data = {
+                nodes: new vis.DataSet(activeRunData.nodes),
+                edges: new vis.DataSet(activeRunData.edges)
+            };
+
+            const options = {
+                physics: {
+                    enabled: physicsEnabled,
+                    solver: "barnesHut",
+                    barnesHut: {
+                        gravitationalConstant: -2500,
+                        centralGravity: 0.15,
+                        springLength: 95,
+                        springConstant: 0.04
+                    }
+                },
+                interaction: {
+                    hover: true,
+                    navigationButtons: false,
+                    keyboard: true
+                }
+            };
+
+            networkInstance = new vis.Network(container, data, options);
+
+            // Double click / Click to Inspect Node
+            networkInstance.on("click", (params) => {
+                if (params.nodes.length > 0) {
+                    const nodeId = params.nodes[0];
+                    const node = activeRunData.nodes.find(n => n.id === nodeId);
+                    if (node) {
+                        inspectNode(node);
+                    }
+                } else {
+                    inspectorPanel.classList.remove("open");
+                }
+            });
+        }
+
+        // Inspect Node Properties
+        function inspectNode(node) {
+            inspectorTitle.innerText = `${node.rawLabel} Properties`;
+            let propHtml = ``;
+            for (const [key, value] of Object.entries(node.properties)) {
+                let formattedVal = value;
+                if (typeof value === "object" || key === "payload") {
+                    try {
+                        let parsed = typeof value === "string" ? JSON.parse(value) : value;
+                        formattedVal = `<pre style="font-size:11px; white-space:pre-wrap; color:#A7F3D0;">${JSON.stringify(parsed, null, 2)}</pre>`;
+                    } catch (e) {
+                        formattedVal = `<pre style="font-size:11px; white-space:pre-wrap;">${value}</pre>`;
+                    }
+                }
+                propHtml += `
+                    <div class="property-group">
+                        <div class="property-label">${key}</div>
+                        <div class="property-value">${formattedVal}</div>
+                    </div>
+                `;
+            }
+            inspectorProperties.innerHTML = propHtml;
+            inspectorPanel.classList.add("open");
+        }
+
+        // Close Inspector
+        inspectorClose.addEventListener("click", () => {
+            inspectorPanel.classList.remove("open");
+        });
+
+        // Render step log timeline tab
+        function renderTimeline() {
+            const steps = activeRunData.events.filter(e => e.label === "agent.step");
+            if (steps.length === 0) {
+                timelineView.innerHTML = `<div style="padding:20px; text-align:center; color:var(--text-muted);">No sequential agent steps found in this run (ingestion meta only).</div>`;
+                return;
+            }
+
+            let timelineHtml = `<div class="timeline-wrapper"><div class="timeline-line"></div>`;
+            steps.forEach((step, idx) => {
+                let payload = typeof step.properties.payload === "string" ? JSON.parse(step.properties.payload) : step.properties.payload;
+                let thought = payload.thought || "";
+                let action = payload.action || "";
+                let obs = payload.observation || "";
+                
+                let cardClass = "";
+                if (action.includes("submit") || action.includes("completed")) cardClass = "success";
+                if (obs.includes("AttributeError") || obs.includes("TypeError") || obs.includes("Error")) cardClass = "failed";
+
+                timelineHtml += `
+                    <div class="timeline-card ${cardClass}">
+                        <div class="timeline-header">
+                            <span class="timeline-title">Agent Execution Step</span>
+                            <span class="timeline-step">Step ${payload.step_index || idx}</span>
+                        </div>
+                        ${thought ? `<div class="timeline-thought">${thought}</div>` : ""}
+                        ${action ? `<div class="timeline-action"><strong>Action:</strong> ${action}</div>` : ""}
+                        ${obs ? `<div class="timeline-obs"><strong>Observation:</strong>\n${obs}</div>` : ""}
+                    </div>
+                `;
+            });
+            
+            // Check terminal outcome event
+            const terminal = activeRunData.events.find(e => ["run.completed", "run.failed", "run.backtracked"].includes(e.properties.type));
+            if (terminal) {
+                let p = typeof terminal.properties.payload === "string" ? JSON.parse(terminal.properties.payload) : terminal.properties.payload;
+                let colorClass = terminal.properties.type === "run.completed" ? "success" : "failed";
+                timelineHtml += `
+                    <div class="timeline-card ${colorClass}" style="margin-top:20px;">
+                        <div class="timeline-header">
+                            <span class="timeline-title" style="text-transform:uppercase; font-weight:700;">Terminal Outcome: ${terminal.properties.type}</span>
+                            <span class="status-badge ${terminal.properties.type.replace(".","_")}">${terminal.properties.type}</span>
+                        </div>
+                        <div class="timeline-obs" style="color:#fff; background:#111827;">${JSON.stringify(p, null, 2)}</div>
+                    </div>
+                `;
+            }
+            
+            timelineHtml += `</div>`;
+            timelineView.innerHTML = timelineHtml;
+        }
+
+        // Tab selection logic
+        tabGraphBtn.addEventListener("click", () => {
+            tabGraphBtn.classList.add("active");
+            tabTimelineBtn.classList.remove("active");
+            graphViewport.style.display = "block";
+            timelineView.style.display = "none";
+        });
+
+        tabTimelineBtn.addEventListener("click", () => {
+            tabTimelineBtn.classList.add("active");
+            tabGraphBtn.classList.remove("active");
+            graphViewport.style.display = "none";
+            timelineView.style.display = "flex";
+        });
+
+        // Fit view
+        fitViewBtn.addEventListener("click", () => {
+            if (networkInstance) networkInstance.fit({ animation: { duration: 1000, easingFunction: "easeInOutQuad" } });
+        });
+
+        // Physics toggle
+        physicsToggleBtn.addEventListener("click", () => {
+            physicsEnabled = !physicsEnabled;
+            if (physicsEnabled) {
+                physicsToggleBtn.innerHTML = `<i data-lucide="zap"></i> Disable Physics`;
+                physicsToggleBtn.classList.remove("muted");
+            } else {
+                physicsToggleBtn.innerHTML = `<i data-lucide="zap-off"></i> Enable Physics`;
+                physicsToggleBtn.classList.add("muted");
+            }
+            lucide.createIcons();
+            if (networkInstance) {
+                networkInstance.setOptions({ physics: { enabled: physicsEnabled } });
+            }
+        });
+
+        // Initialize connection
+        loadRuns();
+
+    </script>
+</body>
+</html>

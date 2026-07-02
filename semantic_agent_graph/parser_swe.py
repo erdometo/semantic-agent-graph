@@ -61,7 +61,8 @@ def ingest_swe_trajectory(
     extractor: EntityExtractor,
     traj_path: str,
     run_id: str,
-    goal: str
+    goal: str,
+    is_success: bool = True
 ) -> Run:
     """
     Parses a SWE-agent trajectory JSON file and ingests it into SQLite and Neo4j.
@@ -83,9 +84,11 @@ def ingest_swe_trajectory(
         goal=goal
     )
     store.create_run(run)
+    events_to_project = []
+    
     if projection:
-        # Project run node
-        projection.apply_event(Event(
+        # Buffer run node projection
+        events_to_project.append(Event(
             id=str(uuid.uuid4()),
             type="run.created",
             timestamp=run.created_at,
@@ -122,8 +125,7 @@ def ingest_swe_trajectory(
         
         # Append step event
         store.append_event(step_event)
-        if projection:
-            projection.apply_event(step_event)
+        events_to_project.append(step_event)
             
         print(f"Step {idx}: Executed '{action}'")
         
@@ -148,8 +150,7 @@ def ingest_swe_trajectory(
                 caused_by=step_event_id
             )
             store.append_event(ent_event)
-            if projection:
-                projection.apply_event(ent_event)
+            events_to_project.append(ent_event)
                 
         # Project extracted relationships in Neo4j
         for rel in relations:
@@ -170,24 +171,36 @@ def ingest_swe_trajectory(
                 caused_by=step_event_id
             )
             store.append_event(rel_event)
-            if projection:
-                projection.apply_event(rel_event)
+            events_to_project.append(rel_event)
                 
         prev_event_id = step_event_id
         
-    # Emit final completion event
-    completion_event = Event(
-        id=str(uuid.uuid4()),
-        type="run.completed",
-        actor="agent",
-        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-        run_id=run_id,
-        payload={"status": "success"},
-        caused_by=prev_event_id
-    )
-    store.append_event(completion_event)
+    # Emit final completion/failure event
+    if is_success:
+        terminal_event = Event(
+            id=str(uuid.uuid4()),
+            type="run.completed",
+            actor="agent",
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            run_id=run_id,
+            payload={"status": "success"},
+            caused_by=prev_event_id
+        )
+    else:
+        terminal_event = Event(
+            id=str(uuid.uuid4()),
+            type="run.failed",
+            actor="agent",
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            run_id=run_id,
+            payload={"status": "failed", "message": "Failed to resolve GitHub issue."},
+            caused_by=prev_event_id
+        )
+    store.append_event(terminal_event)
+    events_to_project.append(terminal_event)
+    
     if projection:
-        projection.apply_event(completion_event)
+        projection.apply_events(events_to_project)
         
     print(f"Run {run_id} successfully ingested and bloomed!")
     return run

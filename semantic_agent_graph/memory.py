@@ -63,7 +63,7 @@ class Neo4jMemoryTool:
         MATCH (r)-[:CONTAINS]->(e:Event)-[:PROCESSED]->(target:Entity)
         WHERE target.name IN $entity_names
         WITH DISTINCT e
-        MATCH (e)-[:NEXT*0..2]-(surr:Event)
+        MATCH (e)-[:NEXT*0..5]-(surr:Event)
         WITH collect(DISTINCT surr) AS surr_list
         UNWIND surr_list AS surr
         OPTIONAL MATCH (surr)-[next_rel:NEXT]->(other:Event)
@@ -107,7 +107,7 @@ class Neo4jMemoryTool:
                     proc_rel = record["proc_rel"]
                     ent = record["ent"]
 
-                    if surr:
+                    if surr is not None:
                         s_id = _get_node_id(surr)
                         if s_id not in nodes_map:
                             nodes_map[s_id] = {
@@ -116,7 +116,7 @@ class Neo4jMemoryTool:
                                 "properties": _clean_properties(dict(surr))
                             }
 
-                    if ent:
+                    if ent is not None:
                         e_id = _get_node_id(ent)
                         if e_id not in nodes_map:
                             nodes_map[e_id] = {
@@ -125,7 +125,7 @@ class Neo4jMemoryTool:
                                 "properties": _clean_properties(dict(ent))
                             }
 
-                    if next_rel:
+                    if next_rel is not None:
                         start_id = _get_node_id(next_rel.start_node)
                         end_id = _get_node_id(next_rel.end_node)
                         rel_key = (next_rel.type, start_id, end_id)
@@ -137,7 +137,7 @@ class Neo4jMemoryTool:
                                 "properties": _clean_properties(dict(next_rel))
                             }
 
-                    if proc_rel:
+                    if proc_rel is not None:
                         start_id = _get_node_id(proc_rel.start_node)
                         end_id = _get_node_id(proc_rel.end_node)
                         rel_key = (proc_rel.type, start_id, end_id)

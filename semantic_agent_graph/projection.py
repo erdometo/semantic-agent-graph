@@ -1,10 +1,10 @@
 import json
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from neo4j import GraphDatabase
-from semantic_agent_graph.models import Event
+from semantic_agent_graph.models import Event, Run
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,28 @@ class Neo4jProjection:
         """
         self.driver = GraphDatabase.driver(uri, auth=auth)
         logger.info(f"Initialized Neo4jProjection driver connected to {uri}")
+        self._create_indexes()
+
+    def _create_indexes(self) -> None:
+        try:
+            with self.driver.session() as session:
+                # Drop old single-property event constraint if it exists
+                try:
+                    session.run("DROP CONSTRAINT event_id_unique IF EXISTS")
+                except Exception as ex:
+                    logger.debug(f"Could not drop event_id_unique: {ex}")
+
+                # Event indexes and constraints
+                session.run("CREATE CONSTRAINT event_id_run_id_unique IF NOT EXISTS FOR (e:Event) REQUIRE (e.id, e.run_id) IS UNIQUE")
+                session.run("CREATE INDEX event_seq_index IF NOT EXISTS FOR (e:Event) ON (e.seq)")
+                session.run("CREATE INDEX event_run_id_index IF NOT EXISTS FOR (e:Event) ON (e.run_id)")
+                # Entity indexes and constraints
+                session.run("CREATE CONSTRAINT entity_name_unique IF NOT EXISTS FOR (ent:Entity) REQUIRE ent.name IS UNIQUE")
+                # Run indexes and constraints
+                session.run("CREATE CONSTRAINT run_id_unique IF NOT EXISTS FOR (r:Run) REQUIRE r.run_id IS UNIQUE")
+            logger.info("Successfully created Neo4j indexes and constraints.")
+        except Exception as e:
+            logger.warning(f"Could not create Neo4j indexes/constraints: {e}")
 
     def close(self) -> None:
         """
@@ -55,6 +77,23 @@ class Neo4jProjection:
         except Exception as e:
             logger.error(f"Failed to project event {event.id} to Neo4j: {e}", exc_info=True)
             raise
+
+    def apply_events(self, events: List[Event]) -> None:
+        """
+        Projects a batch of events into Neo4j in a single transaction.
+        """
+        if not events:
+            return
+        try:
+            with self.driver.session() as session:
+                session.execute_write(self._apply_events_tx, events)
+        except Exception as e:
+            logger.error(f"Failed to project batch of {len(events)} events to Neo4j: {e}", exc_info=True)
+            raise
+
+    def _apply_events_tx(self, tx, events: List[Event]) -> None:
+        for event in events:
+            self._apply_event_tx(tx, event)
 
     def _normalize_name(self, name: str) -> str:
         """
@@ -167,14 +206,17 @@ class Neo4jProjection:
 
         # 3. Maintain chronological sequence via NEXT edge
         if event.seq is not None:
-            prev_seq = event.seq - 1
             tx.run(
                 """
-                MATCH (prev:Event {seq: $prev_seq})
+                MATCH (r:Run {run_id: $run_id})
                 MATCH (curr:Event {id: $id, run_id: $run_id})
-                MERGE (prev)-[:NEXT]->(curr)
+                OPTIONAL MATCH (prev:Event {id: r.latest_event_id, run_id: $run_id})
+                WITH r, curr, prev
+                FOREACH (p IN case when prev is not null then [prev] else [] end |
+                    MERGE (p)-[:NEXT]->(curr)
+                )
+                SET r.latest_event_id = $id
                 """,
-                prev_seq=prev_seq,
                 id=event.id,
                 run_id=event.run_id
             )
@@ -319,3 +361,62 @@ class Neo4jProjection:
                         new_run_id=new_run_id,
                         parent_event_id=parent_event_id
                     )
+
+    def fork_run(
+        self,
+        parent_run_id: str,
+        new_run: Run,
+        forked_at_event_id: str,
+        copied_events: List[Event]
+    ) -> None:
+        """
+        Projects a run fork into Neo4j.
+        Creates the new Run node, links it to the parent fork point event,
+        and projects all copied events under the new run_id.
+        """
+        with self.driver.session() as session:
+            # 1. Create the new Run node
+            session.run(
+                """
+                MERGE (r:Run {run_id: $run_id})
+                SET r.parent_run_id = $parent_run_id,
+                    r.forked_at_event_id = $forked_at_event_id,
+                    r.label = $label,
+                    r.created_at = $created_at,
+                    r.goal = $goal,
+                    r.frame_id = $frame_id
+                """,
+                run_id=new_run.run_id,
+                parent_run_id=parent_run_id,
+                forked_at_event_id=forked_at_event_id,
+                label=getattr(new_run, "label", None),
+                created_at=new_run.created_at,
+                goal=new_run.goal,
+                frame_id=getattr(new_run, "frame_id", None)
+            )
+
+            # 2. Draw a [:FORKED_FROM] edge from the new Run node to the parent Event node
+            session.run(
+                """
+                MATCH (r:Run {run_id: $run_id})
+                MATCH (e:Event {id: $forked_at_event_id})
+                MERGE (r)-[:FORKED_FROM]->(e)
+                """,
+                run_id=new_run.run_id,
+                forked_at_event_id=forked_at_event_id
+            )
+
+            # 3. Project each copied event with the new run_id
+            for event in copied_events:
+                forked_event = Event(
+                    id=event.id,
+                    seq=event.seq,
+                    type=event.type,
+                    actor=event.actor,
+                    timestamp=event.timestamp,
+                    run_id=new_run.run_id,
+                    payload=event.payload,
+                    caused_by=event.caused_by,
+                    frame_id=event.frame_id
+                )
+                self.apply_event(forked_event)

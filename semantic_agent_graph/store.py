@@ -15,11 +15,27 @@ class SQLiteEventStore:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self.listeners = []
+        self.run_listeners = []
         self._init_db()
+
+    def register_listener(self, callback) -> None:
+        """
+        Registers a callback function to be invoked when a new event is appended.
+        """
+        self.listeners.append(callback)
+
+    def register_run_listener(self, callback) -> None:
+        """
+        Registers a callback function to be invoked when a new run is created.
+        """
+        self.run_listeners.append(callback)
 
     def _init_db(self):
         with self._lock:
             cursor = self._conn.cursor()
+            cursor.execute("PRAGMA synchronous = OFF;")
+            cursor.execute("PRAGMA journal_mode = WAL;")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS runs (
                     run_id TEXT PRIMARY KEY,
@@ -69,6 +85,13 @@ class SQLiteEventStore:
                 self._conn.commit()
             except sqlite3.IntegrityError as e:
                 raise ValueError(f"Run with ID '{run.run_id}' already exists.") from e
+
+        # Notify run listeners outside the lock context
+        for listener in self.run_listeners:
+            try:
+                listener(run)
+            except Exception:
+                pass
 
     def get_run(self, run_id: str) -> Optional[Run]:
         """
@@ -141,6 +164,13 @@ class SQLiteEventStore:
                 event.seq = cursor.lastrowid
             except sqlite3.IntegrityError as e:
                 raise ValueError(f"Event with ID '{event.id}' already exists in run '{event.run_id}'.") from e
+
+        # Notify listeners outside the lock context to avoid deadlock/blocking
+        for listener in self.listeners:
+            try:
+                listener(event)
+            except Exception:
+                pass
 
     def get_events(self, run_id: str) -> List[Event]:
         """

@@ -261,37 +261,67 @@ with Neo4jMemoryTool() as memory:
 
 ---
 
+## Interactive WebGL Dashboard Visualizer
+
+We provide a built-in React, TypeScript, and Vite-powered interactive WebGL dashboard to visualize both the episodic trajectories and the global bloomed semantic memory graph:
+
+*   **Dual View Force-Directed Canvas**: Toggle between an interactive 2D (Canvas) and 3D (Three.js/WebGL) force-directed graph.
+*   **Real-time WebSocket Streaming**: Live streaming of new runs and events as they are committed to SQLite, utilizing a 1.0 second buffering delay to keep UI rendering lightweight.
+*   **Chronological Timeline Layout Mode**: Toggle timeline positioning to lock Event nodes horizontally (`fx = seq * 80`) and separate parent-child branch runs into clean parallel lanes along the Y-axis. Global Entity nodes are aligned based on the average step they were referenced and placed on a fixed top shelf to avoid clutter.
+*   **Tabbed Sidebar Inspector**: Click on any node (Run, Event, or Entity) to view structured descriptions, lineage branch jumps (e.g. "Forked from run X"), and raw database JSON payloads in a dedicated right sidebar.
+
+---
+
 ## Setup & Local Installation
 
 ### Prerequisites
 *   Python 3.10+
 *   Poetry 2.0+
+*   Node.js 18+ and npm
 *   A running Neo4j Instance (at `bolt://localhost:7687` with credentials `neo4j/password` for local testing)
 
-### Installation
-Clone the repository and install dependencies using Poetry:
+### 1. Dockerized Deployment (Recommended)
+You can build and spin up the complete stack—including a pre-configured Neo4j instance with APOC plugins, the FastAPI backend, and the static dashboard—in a single command:
+```bash
+docker compose up --build
+```
+Once healthy, access the dashboard at **`http://localhost:8000/`**.
+
+### 2. Local Manual Installation
+Clone the repository and install both backend and frontend dependencies:
+
+**Backend Setup:**
 ```bash
 git clone https://github.com/erdometo/semantic-agent-graph.git
 cd semantic-agent-graph
 poetry install --no-root
 ```
 
-### Running the Tests
-To run the automated test suite verifying SQLite concurrency, event sequencing, extraction, caching, and parsing:
+**Frontend Dashboard Setup:**
 ```bash
-poetry run python -m pytest
+cd dashboard
+npm install
+npm run build
+cd ..
+```
+
+### Running the API Server Locally
+To start the FastAPI server serving both API routes and built static files:
+```bash
+poetry run uvicorn semantic_agent_graph.api:app --host 127.0.0.1 --port 8000
+```
+Open **`http://localhost:8000/`** in your browser.
+
+### Running the Test Suite
+To run the automated test suite verifying SQLite concurrency, event sequencing, extraction, caching, and WebSockets:
+```bash
+$env:PYTHONPATH="."; poetry run pytest
 ```
 
 ### Running the Integration Demo
-To execute the simulated connection failure scenario:
+To execute the simulated connection failure, backtracking, and branching recovery demo:
 ```bash
-poetry run python demo.py
-```
-
-### Running the Trajectory Parser
-To run the SWE-agent trajectory ingestion demo locally (creates a sample JSON and ingests it):
-```bash
-poetry run python -m semantic_agent_graph.parser_swe
+$env:PYTHONPATH="."; poetry run python demo.py
 ```
 
 ---
@@ -300,7 +330,7 @@ poetry run python -m semantic_agent_graph.parser_swe
 
 To run the benchmarks comparing CQRS database latencies and cache replay speeds:
 ```bash
-poetry run python benchmark.py
+$env:PYTHONPATH="."; poetry run python benchmark.py
 ```
 
 ### 1. CQRS Database Write Latency (SQLite vs. Neo4j)
